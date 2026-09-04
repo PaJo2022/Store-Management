@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.sandbox
+.env.live
+frontend/node_modules/
+frontend/dist/
+data/
+storage/

@@ -1,0 +1,45 @@
+{
+  "name": "store",
+  "version": "1.0.0",
+  "description": "Shopify fulfillment backend milestone 1",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev:server": "nodemon --watch src --watch .env --watch .env.sandbox --watch .env.live --ext ts,env --exec \"tsx src/index.ts\"",
+    "dev": "node scripts/run-with-env.js .env.sandbox dev:server",
+    "dev:ui": "npm run dev:ui:sandbox",
+    "dev:ui:sandbox": "npm --prefix frontend run dev -- --port 5714",
+    "dev:ui:live": "npm --prefix frontend run dev -- --port 5173",
+    "dev:all:sandbox:raw": "concurrently \"npm run dev:server\" \"npm run dev:ui:sandbox\"",
+    "dev:all:live:raw": "concurrently \"npm run dev:server\" \"npm run dev:ui:live\"",
+    "dev:all": "node scripts/run-with-env.js .env.sandbox dev:all:sandbox:raw",
+    "prod-check": "node scripts/prod-check.js .env.live",
+    "prod-all": "npm run prod-check && node scripts/run-with-env.js .env.live dev:all:live:raw",
+    "dev:all:tunnel": "concurrently \"npm run dev\" \"npm run dev:ui\" \"npm run tunnel:web\"",
+    "tunnel:api": "ngrok http 4001",
+    "tunnel:web": "ngrok http 5714",
+    "build": "tsc -p tsconfig.json",
+    "build:ui": "npm --prefix frontend run build",
+    "test": "npm run build && powershell -NoProfile -Command \"$files = Get-ChildItem -Path dist -Recurse -Filter *.test.js | ForEach-Object { $_.FullName }; if (-not $files) { throw 'No compiled test files found.' }; node --test $files\"",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.4.0",
+    "concurrently": "^8.2.2",
+    "ngrok": "^5.0.0-beta.2",
+    "nodemon": "^3.1.14",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}
