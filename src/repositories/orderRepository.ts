@@ -54,8 +54,10 @@ export class OrderRepository {
               customer_json,
               shipping_json,
               line_items_json,
+              shopify_tracking_number,
+              shopify_tracking_company,
               synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               legacy_id = excluded.legacy_id,
               name = excluded.name,
@@ -69,6 +71,8 @@ export class OrderRepository {
               customer_json = excluded.customer_json,
               shipping_json = excluded.shipping_json,
               line_items_json = excluded.line_items_json,
+              shopify_tracking_number = excluded.shopify_tracking_number,
+              shopify_tracking_company = excluded.shopify_tracking_company,
               synced_at = excluded.synced_at
           `,
           order.id,
@@ -84,6 +88,8 @@ export class OrderRepository {
           order.customer ? JSON.stringify(order.customer) : null,
           order.shippingAddress ? JSON.stringify(order.shippingAddress) : null,
           JSON.stringify(order.lineItems),
+          order.fulfillmentTrackingNumber ?? null,
+          order.fulfillmentCarrier ?? null,
           syncedAt
         );
       }
@@ -154,7 +160,7 @@ export class OrderRepository {
     if (filter === "fulfilled") {
       whereClause = "WHERE UPPER(o.fulfillment_status) = 'FULFILLED'";
     } else if (filter === "open") {
-      whereClause = "WHERE UPPER(o.fulfillment_status) != 'FULFILLED'";
+      whereClause = "WHERE UPPER(o.fulfillment_status) NOT IN ('FULFILLED', 'CANCELLED')";
     }
 
     const rows = await this.db.all<OrderRow[]>(
@@ -176,9 +182,9 @@ export class OrderRepository {
              f.amazon_service AS best_rate_service,
              f.shipping_charge AS best_rate_amount,
                   COALESCE(f.currency, o.currency_code) AS best_rate_currency,
-                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_tracking_number,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1), o.shopify_tracking_number) AS fulfillment_tracking_number,
                   COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.label_storage_path END, (SELECT jobs.label_url FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_label_url,
-                  CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier ELSE NULL END AS fulfillment_carrier,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier END, o.shopify_tracking_company) AS fulfillment_carrier,
                   CASE WHEN f.status = 'FULFILLED' THEN f.amazon_service ELSE NULL END AS fulfillment_service,
                   CASE WHEN f.status = 'FULFILLED' THEN f.shipping_charge ELSE NULL END AS fulfillment_shipping_cost,
                   CASE WHEN f.status = 'FULFILLED' THEN COALESCE(f.currency, o.currency_code) ELSE NULL END AS fulfillment_currency
@@ -214,9 +220,9 @@ export class OrderRepository {
              f.amazon_service AS best_rate_service,
              f.shipping_charge AS best_rate_amount,
                   COALESCE(f.currency, o.currency_code) AS best_rate_currency,
-                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_tracking_number,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1), o.shopify_tracking_number) AS fulfillment_tracking_number,
                   COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.label_storage_path END, (SELECT jobs.label_url FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_label_url,
-                  CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier ELSE NULL END AS fulfillment_carrier,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier END, o.shopify_tracking_company) AS fulfillment_carrier,
                   CASE WHEN f.status = 'FULFILLED' THEN f.amazon_service ELSE NULL END AS fulfillment_service,
                   CASE WHEN f.status = 'FULFILLED' THEN f.shipping_charge ELSE NULL END AS fulfillment_shipping_cost,
                   CASE WHEN f.status = 'FULFILLED' THEN COALESCE(f.currency, o.currency_code) ELSE NULL END AS fulfillment_currency
@@ -252,9 +258,9 @@ export class OrderRepository {
              f.amazon_service AS best_rate_service,
              f.shipping_charge AS best_rate_amount,
                   COALESCE(f.currency, o.currency_code) AS best_rate_currency,
-                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_tracking_number,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1), o.shopify_tracking_number) AS fulfillment_tracking_number,
                   COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.label_storage_path END, (SELECT jobs.label_url FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_label_url,
-                  CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier ELSE NULL END AS fulfillment_carrier,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier END, o.shopify_tracking_company) AS fulfillment_carrier,
                   CASE WHEN f.status = 'FULFILLED' THEN f.amazon_service ELSE NULL END AS fulfillment_service,
                   CASE WHEN f.status = 'FULFILLED' THEN f.shipping_charge ELSE NULL END AS fulfillment_shipping_cost,
                   CASE WHEN f.status = 'FULFILLED' THEN COALESCE(f.currency, o.currency_code) ELSE NULL END AS fulfillment_currency
@@ -297,9 +303,9 @@ export class OrderRepository {
              f.amazon_service AS best_rate_service,
              f.shipping_charge AS best_rate_amount,
                   COALESCE(f.currency, o.currency_code) AS best_rate_currency,
-                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_tracking_number,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_tracking_id END, (SELECT jobs.tracking_number FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1), o.shopify_tracking_number) AS fulfillment_tracking_number,
                   COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.label_storage_path END, (SELECT jobs.label_url FROM fulfillment_jobs jobs INNER JOIN fulfillment_batches batches ON batches.id = jobs.batch_id WHERE jobs.order_id = o.id AND jobs.status = 'SUCCESS' AND batches.dry_run = 0 ORDER BY datetime(jobs.updated_at) DESC LIMIT 1)) AS fulfillment_label_url,
-                  CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier ELSE NULL END AS fulfillment_carrier,
+                  COALESCE(CASE WHEN f.status = 'FULFILLED' THEN f.amazon_carrier END, o.shopify_tracking_company) AS fulfillment_carrier,
                   CASE WHEN f.status = 'FULFILLED' THEN f.amazon_service ELSE NULL END AS fulfillment_service,
                   CASE WHEN f.status = 'FULFILLED' THEN f.shipping_charge ELSE NULL END AS fulfillment_shipping_cost,
                   CASE WHEN f.status = 'FULFILLED' THEN COALESCE(f.currency, o.currency_code) ELSE NULL END AS fulfillment_currency

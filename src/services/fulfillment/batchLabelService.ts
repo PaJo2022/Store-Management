@@ -6,6 +6,11 @@ import {
   ShippingRateOption
 } from "../amazon/amazonShippingService";
 import { LabelStorageService } from "./labelStorageService";
+import { ShopifyFulfillmentService } from "../shopify/shopifyFulfillmentService";
+
+function toAmazonTrackingUrl(trackingId: string): string {
+  return `https://track.amazon.in/tracking/${encodeURIComponent(trackingId)}`;
+}
 
 interface CreateBatchInput {
   orderIds: string[];
@@ -47,8 +52,35 @@ export class BatchLabelService {
     private readonly orderRepository: OrderRepository,
     private readonly fulfillmentRepository: FulfillmentRepository,
     private readonly amazonShippingService: AmazonShippingService,
-    private readonly labelStorageService: LabelStorageService
+    private readonly labelStorageService: LabelStorageService,
+    private readonly shopifyFulfillmentService?: ShopifyFulfillmentService
   ) {}
+
+  private async syncShopifyFulfillment(
+    orderId: string,
+    trackingNumber: string,
+    carrier: string
+  ): Promise<void> {
+    if (!this.shopifyFulfillmentService) {
+      return;
+    }
+
+    try {
+      const result = await this.shopifyFulfillmentService.fulfillOrderWithTracking({
+        orderId,
+        trackingNumber,
+        carrier,
+        trackingUrl: toAmazonTrackingUrl(trackingNumber)
+      });
+
+      if (!result.synced) {
+        console.warn(`[shopify:fulfillment] ${orderId} not synced: ${result.message}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error(`[shopify:fulfillment] ${orderId} sync failed: ${message}`);
+    }
+  }
 
   async generateOrderLabel(
     orderId: string,
@@ -91,6 +123,8 @@ export class BatchLabelService {
           );
         }
 
+        await this.syncShopifyFulfillment(normalizedOrderId, existing.trackingNumber, existing.carrier);
+
         return {
           success: true,
           orderId: normalizedOrderId,
@@ -113,6 +147,10 @@ export class BatchLabelService {
       const order = orders[0];
       if (!order) {
         throw new Error("No matching order found in local cache. Sync orders first.");
+      }
+
+      if (order.fulfillmentStatus?.toUpperCase() === "FULFILLED") {
+        throw new Error("Order is already fulfilled in Shopify. Label generation is not allowed.");
       }
 
       const rates = await this.amazonShippingService.getRates(order);
@@ -191,14 +229,17 @@ export class BatchLabelService {
       try {
         const alreadyLabeled =
           await this.fulfillmentRepository.hasSuccessfulJobForOrder(order.id);
+        const alreadyFulfilledInShopify = order.fulfillmentStatus?.toUpperCase() === "FULFILLED";
 
-        if (alreadyLabeled && !input.dryRun) {
+        if ((alreadyLabeled || alreadyFulfilledInShopify) && !input.dryRun) {
           await this.fulfillmentRepository.updateJobResult(
             batch.id,
             order.id,
             "SKIPPED",
             {
-              errorMessage: "Order already has a successful label in history."
+              errorMessage: alreadyLabeled
+                ? "Order already has a successful label in history."
+                : "Order is already fulfilled in Shopify. Label generation is not allowed."
             }
           );
           continue;
@@ -246,6 +287,10 @@ export class BatchLabelService {
             collectAmount: label.collectAmount
           }
         );
+
+        if (!input.dryRun) {
+          await this.syncShopifyFulfillment(order.id, label.trackingNumber, label.carrier);
+        }
       } catch (error) {
         const errorMessage =
           error instanceof AmazonIntegrationError && error.details

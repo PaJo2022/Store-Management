@@ -13,6 +13,13 @@ export interface SyncState {
   totalOrders: number;
 }
 
+export interface SyncOptions {
+  limit?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  fullSync?: boolean;
+}
+
 export class OrdersSyncManager {
   private lastSyncedAt: string | null = null;
 
@@ -22,9 +29,20 @@ export class OrdersSyncManager {
     private readonly ratesPrimer?: RatesPrimer
   ) {}
 
-  async sync(limit = 50): Promise<SyncState> {
-    const safeLimit = Math.max(1, Math.min(limit, 250));
-    const orders = await this.ordersService.fetchLatestOrders(safeLimit);
+  async sync(options: SyncOptions | number = 50): Promise<SyncState> {
+    const normalized: SyncOptions = typeof options === "number" ? { limit: options } : options;
+    const isRangeOrFullSync = normalized.fullSync || Boolean(normalized.dateFrom) || Boolean(normalized.dateTo);
+
+    const orders = isRangeOrFullSync
+      ? await this.ordersService.fetchOrders({
+          dateFrom: normalized.dateFrom,
+          dateTo: normalized.dateTo,
+          maxOrders: normalized.limit
+        })
+      : await this.ordersService.fetchLatestOrders(
+          Math.max(1, Math.min(normalized.limit ?? 50, 250))
+        );
+
     this.lastSyncedAt = new Date().toISOString();
     await this.orderRepository.upsertOrders(orders, this.lastSyncedAt);
     if (this.ratesPrimer) {
@@ -37,7 +55,7 @@ export class OrdersSyncManager {
   async getOrders(filter: OrderFilter): Promise<OrderSummary[]> {
     const orderCount = await this.orderRepository.countOrders();
     if (orderCount === 0) {
-      await this.sync(50);
+      await this.sync({ limit: 50 });
     }
 
     return this.orderRepository.listOrders(filter);
@@ -46,7 +64,7 @@ export class OrdersSyncManager {
   async getOrderById(orderId: string): Promise<OrderSummary | null> {
     const orderCount = await this.orderRepository.countOrders();
     if (orderCount === 0) {
-      await this.sync(50);
+      await this.sync({ limit: 50 });
     }
 
     return this.orderRepository.getOrderById(orderId);
@@ -55,10 +73,25 @@ export class OrdersSyncManager {
   async getOrderByLegacyId(legacyId: string): Promise<OrderSummary | null> {
     const orderCount = await this.orderRepository.countOrders();
     if (orderCount === 0) {
-      await this.sync(50);
+      await this.sync({ limit: 50 });
     }
 
     return this.orderRepository.getOrderByLegacyId(legacyId);
+  }
+
+  /** Re-fetches one order from Shopify so status changed there (e.g. cancellation) reflects immediately. */
+  async refreshOrderFromShopify(orderId: string): Promise<OrderSummary | null> {
+    if (!orderId.startsWith("gid://shopify/Order/")) {
+      return null;
+    }
+
+    const freshOrder = await this.ordersService.fetchOrderById(orderId);
+    if (!freshOrder) {
+      return null;
+    }
+
+    await this.orderRepository.upsertOrders([freshOrder], new Date().toISOString());
+    return this.orderRepository.getOrderById(orderId);
   }
 
   async getState(): Promise<SyncState> {

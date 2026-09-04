@@ -289,6 +289,10 @@ function toAbsoluteLabelUrl(labelUrl: string): string {
   return `${window.location.origin}${labelUrl.startsWith('/') ? labelUrl : `/${labelUrl}`}`
 }
 
+function toAmazonTrackingUrl(trackingId: string): string {
+  return `https://track.amazon.in/tracking/${encodeURIComponent(trackingId)}`
+}
+
 function LabelPreview({ labelUrl, orderId }: { labelUrl: string; orderId: string }) {
   const previewUrl = useMemo(() => {
     if (!labelUrl.startsWith('data:')) {
@@ -769,6 +773,39 @@ function getLegacyOrderId(shopifyGid: string): string {
   return shopifyGid.split('/').pop() ?? shopifyGid
 }
 
+const ORDER_STATUS_LABELS: Record<string, string> = {
+  FULFILLED: 'Fulfilled',
+  CANCELLED: 'Cancelled',
+  PARTIALLY_FULFILLED: 'Partially Fulfilled',
+  IN_PROGRESS: 'In Progress',
+  ON_HOLD: 'On Hold',
+  SCHEDULED: 'Scheduled',
+  PENDING_FULFILLMENT: 'Pending',
+  RESTOCKED: 'Restocked',
+  UNFULFILLED: 'Unfulfilled'
+}
+
+function getOrderStatusMeta(fulfillmentStatus: string): { label: string; className: string } {
+  const normalized = fulfillmentStatus?.toUpperCase() ?? 'UNFULFILLED'
+
+  if (normalized === 'FULFILLED') {
+    return { label: 'Fulfilled', className: 'fulfilled' }
+  }
+  if (normalized === 'CANCELLED' || normalized === 'RESTOCKED') {
+    return { label: ORDER_STATUS_LABELS[normalized], className: 'cancelled' }
+  }
+
+  const label =
+    ORDER_STATUS_LABELS[normalized] ??
+    normalized
+      .toLowerCase()
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+
+  return { label, className: 'processing' }
+}
+
 function toEpochMs(value: string | undefined): number {
   if (!value) {
     return Number.POSITIVE_INFINITY
@@ -812,6 +849,10 @@ function DashboardPage() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [showFullSyncPanel, setShowFullSyncPanel] = useState(false)
+  const [fullSyncDateFrom, setFullSyncDateFrom] = useState('')
+  const [fullSyncDateTo, setFullSyncDateTo] = useState('')
+  const [fullSyncing, setFullSyncing] = useState(false)
   const [batching, setBatching] = useState(false)
   const [loadingRates, setLoadingRates] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -942,6 +983,47 @@ function DashboardPage() {
       setError(message)
     } finally {
       setSyncing(false)
+    }
+  }, [activeFilter, loadOrders])
+
+  const runFullSync = useCallback(async (options: { dateFrom?: string; dateTo?: string }) => {
+    setFullSyncing(true)
+    setError(null)
+
+    try {
+      const hasRange = Boolean(options.dateFrom || options.dateTo)
+      const response = await fetch('/api/orders/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(
+          hasRange
+            ? { dateFrom: options.dateFrom || undefined, dateTo: options.dateTo || undefined }
+            : { fullSync: true }
+        )
+      })
+      const data = (await response.json()) as SyncResponse
+
+      if (!response.ok) {
+        throw new Error(readMessage(data) ?? 'Failed to sync orders.')
+      }
+
+      setLastSyncedAt(data.lastSyncedAt)
+      setTotalOrders(data.totalOrders)
+      await loadOrders(activeFilter)
+      setShowFullSyncPanel(false)
+      setSuccess(
+        hasRange
+          ? `Synced orders from ${options.dateFrom || 'the beginning'} to ${options.dateTo || 'now'}.`
+          : 'Synced all orders from Shopify.'
+      )
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error ? requestError.message : 'Unknown error while syncing orders.'
+      setError(message)
+    } finally {
+      setFullSyncing(false)
     }
   }, [activeFilter, loadOrders])
 
@@ -1307,6 +1389,48 @@ function DashboardPage() {
           <button className="sync-button" disabled={syncing} onClick={() => void syncOrders()}>
             {syncing ? 'Syncing...' : 'Import Orders'}
           </button>
+          <div className="full-sync-control">
+            <button
+              className="filter-button"
+              onClick={() => setShowFullSyncPanel((current) => !current)}
+            >
+              Full Sync
+            </button>
+            {showFullSyncPanel ? (
+              <div className="full-sync-panel">
+                <label>
+                  From
+                  <input
+                    type="date"
+                    value={fullSyncDateFrom}
+                    onChange={(event) => setFullSyncDateFrom(event.target.value)}
+                  />
+                </label>
+                <label>
+                  To
+                  <input
+                    type="date"
+                    value={fullSyncDateTo}
+                    onChange={(event) => setFullSyncDateTo(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="sync-button"
+                  disabled={fullSyncing || (!fullSyncDateFrom && !fullSyncDateTo)}
+                  onClick={() => void runFullSync({ dateFrom: fullSyncDateFrom, dateTo: fullSyncDateTo })}
+                >
+                  {fullSyncing ? 'Syncing...' : 'Sync Date Range'}
+                </button>
+                <button
+                  className="filter-button"
+                  disabled={fullSyncing}
+                  onClick={() => void runFullSync({})}
+                >
+                  {fullSyncing ? 'Syncing...' : 'Sync All Orders'}
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </section>
 
@@ -1533,8 +1657,10 @@ function DashboardPage() {
                       <input
                         type="checkbox"
                         checked={selectedOrderIds.includes(order.id)}
+                        disabled={order.fulfillmentStatus === 'FULFILLED'}
                         onChange={() => toggleOrderSelection(order.id)}
                         aria-label={`Select ${order.name}`}
+                        title={order.fulfillmentStatus === 'FULFILLED' ? 'Order is already fulfilled in Shopify.' : undefined}
                       />
                     </td>
                     <td>
@@ -1555,8 +1681,8 @@ function DashboardPage() {
                     </td>
                     <td>{carrierLabel}</td>
                     <td>
-                      <span className={`status-pill ${order.fulfillmentStatus === 'FULFILLED' ? 'fulfilled' : 'processing'}`}>
-                        {order.fulfillmentStatus === 'FULFILLED' ? 'Fulfilled' : 'Initial'}
+                      <span className={`status-pill ${getOrderStatusMeta(order.fulfillmentStatus).className}`}>
+                        {getOrderStatusMeta(order.fulfillmentStatus).label}
                       </span>
                     </td>
                     <td>
@@ -1588,6 +1714,16 @@ function DashboardPage() {
                             rel="noreferrer"
                           >
                             Open Label
+                          </a>
+                        ) : null}
+                        {order.fulfillmentTrackingNumber ? (
+                          <a
+                            className="mini-action"
+                            href={toAmazonTrackingUrl(order.fulfillmentTrackingNumber)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Track
                           </a>
                         ) : null}
                       </div>
@@ -1954,7 +2090,7 @@ function OrderDetailsPage() {
         setSelectedPackageProfileId(nextOrder?.packageProfileId ?? '')
         setSelectedPaymentStatus(nextOrder?.paymentPending ? 'PENDING' : 'PAID')
 
-        if (nextOrder?.fulfillmentLabelUrl && nextOrder.fulfillmentTrackingNumber) {
+        if (nextOrder?.fulfillmentTrackingNumber) {
           setShipment({
             shipmentId: nextOrder.id,
             trackingId: nextOrder.fulfillmentTrackingNumber,
@@ -1962,7 +2098,7 @@ function OrderDetailsPage() {
             service: nextOrder.fulfillmentService ?? nextOrder.bestRateService ?? 'Standard',
             shippingCost: nextOrder.fulfillmentShippingCost ?? nextOrder.bestRateAmount ?? 0,
             currencyCode: nextOrder.fulfillmentCurrency ?? nextOrder.bestRateCurrency ?? nextOrder.currencyCode,
-            labelUrl: nextOrder.fulfillmentLabelUrl,
+            labelUrl: nextOrder.fulfillmentLabelUrl ?? '',
             collectAmount: nextOrder.paymentPending ? nextOrder.amountToCollect : '0.00'
           })
           setShipmentAlreadyExists(true)
@@ -2177,8 +2313,8 @@ function OrderDetailsPage() {
                 {'<'}
               </Link>
               <h1>{order.name}</h1>
-              <span className={`status-pill ${order.fulfillmentStatus === 'FULFILLED' ? 'fulfilled' : 'processing'}`}>
-                {order.fulfillmentStatus}
+              <span className={`status-pill ${getOrderStatusMeta(order.fulfillmentStatus).className}`}>
+                {getOrderStatusMeta(order.fulfillmentStatus).label}
               </span>
             </div>
             <div className="details-meta-row">
@@ -2195,8 +2331,17 @@ function OrderDetailsPage() {
                   {cancellingOrder ? 'Cancelling...' : 'Cancel Manual Order'}
                 </button>
               ) : null}
-              <button className="sync-button" disabled={generatingLabel || order.fulfillmentStatus === 'CANCELLED'} onClick={() => void generateLabel()}>
-                {generatingLabel ? 'Generating Label...' : 'Generate Label'}
+              <button
+                className="sync-button"
+                disabled={generatingLabel || order.fulfillmentStatus === 'CANCELLED' || order.fulfillmentStatus === 'FULFILLED'}
+                title={order.fulfillmentStatus === 'FULFILLED' ? 'Order is already fulfilled in Shopify.' : undefined}
+                onClick={() => void generateLabel()}
+              >
+                {generatingLabel
+                  ? 'Generating Label...'
+                  : order.fulfillmentStatus === 'FULFILLED'
+                    ? 'Already Fulfilled'
+                    : 'Generate Label'}
               </button>
             </div>
           </section>
@@ -2421,24 +2566,50 @@ function OrderDetailsPage() {
                 <section className="shipment-result">
                   <h3>{shipmentAlreadyExists ? 'Shipment Already Exists' : 'Shipment Created'}</h3>
                   <p>
-                    <strong>AWB / Tracking:</strong> {shipment.trackingId}
+                    <strong>AWB / Tracking:</strong>{' '}
+                    <a href={toAmazonTrackingUrl(shipment.trackingId)} target="_blank" rel="noreferrer">
+                      {shipment.trackingId}
+                    </a>
                   </p>
                   <p>
                     <strong>Collect Amount:</strong> {shipment.collectAmount} {shipment.currencyCode}
                   </p>
                   <div className="shipment-actions">
-                    <a href={shipment.labelUrl} className="details-link" target="_blank" rel="noreferrer">
-                      View Label
-                    </a>
-                    <a href={shipment.labelUrl} className="details-link" target="_blank" rel="noreferrer" download>
-                      Download Label
-                    </a>
+                    {shipment.labelUrl ? (
+                      <>
+                        <a href={shipment.labelUrl} className="details-link" target="_blank" rel="noreferrer">
+                          View Label
+                        </a>
+                        <a href={shipment.labelUrl} className="details-link" target="_blank" rel="noreferrer" download>
+                          Download Label
+                        </a>
+                      </>
+                    ) : null}
                   </div>
                 </section>
               ) : null}
             </div>
 
             <aside className="details-right-col">
+              {order.fulfillmentStatus === 'FULFILLED' && shipment ? (
+                <article className="ops-card side-card tracking-card">
+                  <h3>Tracking</h3>
+                  <p>
+                    <strong>{shipment.carrier}</strong>
+                    {shipment.service ? ` - ${shipment.service}` : ''}
+                  </p>
+                  <p className="tracking-number">{shipment.trackingId}</p>
+                  <a
+                    className="sync-button tracking-link"
+                    href={toAmazonTrackingUrl(shipment.trackingId)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Tracking
+                  </a>
+                </article>
+              ) : null}
+
               <article className="ops-card side-card">
                 <div className="ops-card-header">
                   <h3>Recipient</h3>

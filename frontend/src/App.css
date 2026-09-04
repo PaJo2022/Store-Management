@@ -75,6 +75,34 @@
   align-items: center;
 }
 
+.full-sync-control {
+  position: relative;
+}
+
+.full-sync-panel {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+  padding: 0.85rem;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+  min-width: 220px;
+}
+
+.full-sync-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
 .ops-mode-chip {
   border: 1px solid #d0d9ee;
   border-radius: 999px;
@@ -468,6 +496,11 @@ h1 {
 .status-pill.processing {
   background: #fef3d8;
   color: #9a5b00;
+}
+
+.status-pill.cancelled {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .inline-subtle {
@@ -955,6 +988,24 @@ h1 {
   text-decoration: none;
   display: inline-flex;
   align-items: center;
+}
+
+.tracking-card {
+  border-color: rgba(22, 163, 74, 0.35);
+  background: #f0fdf4;
+}
+
+.tracking-card .tracking-number {
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  margin: 0.3rem 0 0.7rem;
+}
+
+.tracking-card .tracking-link {
+  display: inline-flex;
+  text-decoration: none;
+  width: fit-content;
 }
 
 @keyframes revealUp {

@@ -1,6 +1,7 @@
 import { getEnv } from "./config/env";
 import { ShopifyOrdersService } from "./services/shopify/ordersService";
 import { ShopifyClient, ShopifyGraphqlError, ShopifyHttpError } from "./services/shopify/shopifyClient";
+import { ShopifyFulfillmentService } from "./services/shopify/shopifyFulfillmentService";
 import { createServer } from "./server/server";
 import { OrdersSyncManager } from "./server/ordersSyncManager";
 import { createDatabase } from "./db/database";
@@ -20,6 +21,7 @@ async function main(): Promise<void> {
     const db = await createDatabase(env.databasePath);
     const client = new ShopifyClient(env);
     const ordersService = new ShopifyOrdersService(client);
+    const shopifyFulfillmentService = new ShopifyFulfillmentService(client);
     const orderRepository = new OrderRepository(db);
     const fulfillmentRepository = new FulfillmentRepository(db);
     const orderFulfillmentRepository = new OrderFulfillmentRepository(db);
@@ -76,7 +78,8 @@ async function main(): Promise<void> {
       orderRepository,
       fulfillmentRepository,
       amazonShippingService,
-      labelStorageService
+      labelStorageService,
+      shopifyFulfillmentService
     );
     const app = createServer(
       syncManager,

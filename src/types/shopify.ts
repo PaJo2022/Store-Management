@@ -23,6 +23,7 @@ export interface ShopifyOrderNode {
   id: string;
   name: string;
   createdAt: string;
+  cancelledAt: string | null;
   displayFinancialStatus: string | null;
   displayFulfillmentStatus: string | null;
   currentTotalPriceSet: ShopifyMoneyBag;
@@ -50,12 +51,53 @@ export interface ShopifyOrderNode {
       node: ShopifyOrderLineItemNode;
     }>;
   };
+  fulfillments: Array<{
+    trackingInfo: Array<{
+      number: string | null;
+      company: string | null;
+      url: string | null;
+    }>;
+  }>;
 }
 
 export interface ShopifyOrdersQueryData {
   orders: {
+    pageInfo: {
+      hasNextPage: boolean;
+      endCursor: string | null;
+    };
     edges: Array<{
       node: ShopifyOrderNode;
+    }>;
+  };
+}
+
+export interface ShopifySingleOrderQueryData {
+  order: ShopifyOrderNode | null;
+}
+
+export interface ShopifyFulfillmentOrdersQueryData {
+  order: {
+    fulfillmentOrders: {
+      edges: Array<{
+        node: {
+          id: string;
+          status: string;
+        };
+      }>;
+    };
+  } | null;
+}
+
+export interface ShopifyFulfillmentCreateData {
+  fulfillmentCreate: {
+    fulfillment: {
+      id: string;
+      status: string;
+    } | null;
+    userErrors: Array<{
+      field: string[] | null;
+      message: string;
     }>;
   };
 }

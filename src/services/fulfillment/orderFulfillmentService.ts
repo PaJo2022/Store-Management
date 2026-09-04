@@ -82,6 +82,13 @@ export class OrderFulfillmentService {
       return this.toResult(existing, true);
     }
 
+    if (order.fulfillmentStatus?.toUpperCase() === "FULFILLED") {
+      throw new FulfillmentWorkflowError(
+        "VALIDATION_ERROR",
+        "Order is already fulfilled in Shopify. Label generation is not allowed."
+      );
+    }
+
     if (existing.status === "GETTING_RATES" || existing.status === "PURCHASING") {
       throw new FulfillmentWorkflowError(
         "FULFILLMENT_IN_PROGRESS",

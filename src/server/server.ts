@@ -215,7 +215,17 @@ export function createServer(
         return;
       }
 
-      res.json({ order });
+      try {
+        const refreshed = await syncManager.refreshOrderFromShopify(order.id);
+        res.json({ order: refreshed ?? order });
+      } catch (refreshError) {
+        console.warn(
+          `[shopify:refresh] ${order.id} failed, serving cached order: ${
+            refreshError instanceof Error ? refreshError.message : "Unknown error"
+          }`
+        );
+        res.json({ order });
+      }
     } catch (error) {
       sendApiError(res, error);
     }
@@ -418,9 +428,18 @@ export function createServer(
 
   app.post("/api/orders/sync", async (req, res) => {
     try {
+      const dateFrom = readOptionalString(req.body?.dateFrom);
+      const dateTo = readOptionalString(req.body?.dateTo);
+      const fullSync = req.body?.fullSync === true;
       const requestedLimit =
-        typeof req.body?.limit === "number" ? req.body.limit : 50;
-      const state = await syncManager.sync(requestedLimit);
+        typeof req.body?.limit === "number" ? req.body.limit : undefined;
+
+      const state = await syncManager.sync({
+        limit: requestedLimit,
+        dateFrom,
+        dateTo,
+        fullSync
+      });
       res.json({
         message: "Orders synced successfully.",
         ...state

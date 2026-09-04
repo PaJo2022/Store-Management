@@ -1,75 +1,172 @@
 import { OrderSummary } from "../../models/order";
-import { ShopifyOrderNode, ShopifyOrdersQueryData } from "../../types/shopify";
+import {
+  ShopifyOrderNode,
+  ShopifyOrdersQueryData,
+  ShopifySingleOrderQueryData
+} from "../../types/shopify";
 import { ShopifyClient } from "./shopifyClient";
 
-const LATEST_ORDERS_QUERY = `
-  query LatestOrders($first: Int!) {
-    orders(first: $first, sortKey: CREATED_AT, reverse: true) {
+const ORDER_FIELDS_FRAGMENT = `
+  fragment OrderFields on Order {
+    id
+    name
+    createdAt
+    cancelledAt
+    displayFinancialStatus
+    displayFulfillmentStatus
+    currentTotalPriceSet {
+      shopMoney {
+        amount
+        currencyCode
+      }
+    }
+    totalOutstandingSet {
+      shopMoney {
+        amount
+        currencyCode
+      }
+    }
+    paymentGatewayNames
+    shippingAddress {
+      name
+      company
+      address1
+      address2
+      city
+      province
+      zip
+      country
+      phone
+    }
+    lineItems(first: 100) {
       edges {
         node {
-          id
-          name
-          createdAt
-          displayFinancialStatus
-          displayFulfillmentStatus
-          currentTotalPriceSet {
+          title
+          quantity
+          originalUnitPriceSet {
             shopMoney {
               amount
               currencyCode
             }
           }
-          totalOutstandingSet {
-            shopMoney {
-              amount
-              currencyCode
-            }
-          }
-          paymentGatewayNames
-          shippingAddress {
-            name
-            company
-            address1
-            address2
-            city
-            province
-            zip
-            country
-            phone
-          }
-          lineItems(first: 100) {
-            edges {
-              node {
-                title
-                quantity
-                originalUnitPriceSet {
-                  shopMoney {
-                    amount
-                    currencyCode
-                  }
-                }
-              }
-            }
-          }
+        }
+      }
+    }
+    fulfillments(first: 5) {
+      trackingInfo {
+        number
+        company
+        url
+      }
+    }
+  }
+`;
+
+const LATEST_ORDERS_QUERY = `
+  ${ORDER_FIELDS_FRAGMENT}
+  query LatestOrders($first: Int!, $after: String, $query: String) {
+    orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          ...OrderFields
         }
       }
     }
   }
 `;
 
+const SINGLE_ORDER_QUERY = `
+  ${ORDER_FIELDS_FRAGMENT}
+  query SingleOrder($id: ID!) {
+    order(id: $id) {
+      ...OrderFields
+    }
+  }
+`;
+
+export interface FetchOrdersOptions {
+  dateFrom?: string;
+  dateTo?: string;
+  maxOrders?: number;
+}
+
+
+const PAGE_SIZE = 250;
+const DEFAULT_FULL_SYNC_CAP = 5000;
+
 export class ShopifyOrdersService {
   constructor(private readonly shopifyClient: ShopifyClient) {}
 
   async fetchLatestOrders(limit = 10): Promise<OrderSummary[]> {
-    const data = await this.shopifyClient.request<ShopifyOrdersQueryData>(
-      LATEST_ORDERS_QUERY,
-      { first: limit }
+    return this.fetchOrders({ maxOrders: limit });
+  }
+
+  async fetchOrderById(orderId: string): Promise<OrderSummary | null> {
+    const data = await this.shopifyClient.request<ShopifySingleOrderQueryData>(
+      SINGLE_ORDER_QUERY,
+      { id: orderId }
     );
 
-    return data.orders.edges.map((edge) => this.mapOrder(edge.node));
+    return data.order ? this.mapOrder(data.order) : null;
+  }
+
+  async fetchOrders(options: FetchOrdersOptions = {}): Promise<OrderSummary[]> {
+    const searchQuery = this.buildDateRangeQuery(options.dateFrom, options.dateTo);
+    const maxOrders = options.maxOrders ?? DEFAULT_FULL_SYNC_CAP;
+
+    const collected: OrderSummary[] = [];
+    let after: string | undefined;
+
+    for (;;) {
+      const remaining = maxOrders - collected.length;
+      if (remaining <= 0) {
+        break;
+      }
+
+      const data = await this.shopifyClient.request<ShopifyOrdersQueryData>(
+        LATEST_ORDERS_QUERY,
+        {
+          first: Math.min(PAGE_SIZE, remaining),
+          after,
+          query: searchQuery || undefined
+        }
+      );
+
+      collected.push(...data.orders.edges.map((edge) => this.mapOrder(edge.node)));
+
+      if (!data.orders.pageInfo.hasNextPage) {
+        break;
+      }
+
+      after = data.orders.pageInfo.endCursor ?? undefined;
+      if (!after) {
+        break;
+      }
+    }
+
+    return collected;
+  }
+
+  private buildDateRangeQuery(dateFrom?: string, dateTo?: string): string {
+    const parts: string[] = [];
+    if (dateFrom) {
+      parts.push(`created_at:>='${dateFrom}'`);
+    }
+    if (dateTo) {
+      parts.push(`created_at:<='${dateTo}'`);
+    }
+    return parts.join(" ");
   }
 
   private mapOrder(order: ShopifyOrderNode): OrderSummary {
     const total = order.currentTotalPriceSet.shopMoney;
+    const shopifyTracking = order.fulfillments
+      .flatMap((fulfillment) => fulfillment.trackingInfo)
+      .find((info) => info.number);
     const outstandingAmountRaw =
       order.totalOutstandingSet?.shopMoney.amount ?? total.amount;
     const outstandingAmount = Number(outstandingAmountRaw);
@@ -88,7 +185,9 @@ export class ShopifyOrdersService {
       name: order.name,
       createdAt: order.createdAt,
       financialStatus,
-      fulfillmentStatus: order.displayFulfillmentStatus ?? "UNFULFILLED",
+      fulfillmentStatus: order.cancelledAt
+        ? "CANCELLED"
+        : order.displayFulfillmentStatus ?? "UNFULFILLED",
       totalPrice: total.amount,
       currencyCode: total.currencyCode,
       amountToCollect: paymentPending ? outstandingAmountRaw : "0.00",
@@ -118,9 +217,9 @@ export class ShopifyOrdersService {
       bestRateService: null,
       bestRateAmount: null,
       bestRateCurrency: null,
-      fulfillmentTrackingNumber: null,
+      fulfillmentTrackingNumber: shopifyTracking?.number ?? null,
       fulfillmentLabelUrl: null,
-      fulfillmentCarrier: null,
+      fulfillmentCarrier: shopifyTracking?.company ?? null,
       fulfillmentService: null,
       fulfillmentShippingCost: null,
       fulfillmentCurrency: null
