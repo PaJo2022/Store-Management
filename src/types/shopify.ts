@@ -17,6 +17,9 @@ export interface ShopifyOrderLineItemNode {
   title: string;
   quantity: number;
   originalUnitPriceSet: ShopifyMoneyBag | null;
+  taxLines: Array<{
+    priceSet: ShopifyMoneyBag;
+  }>;
 }
 
 export interface ShopifyOrderNode {
@@ -52,6 +55,7 @@ export interface ShopifyOrderNode {
     }>;
   };
   fulfillments: Array<{
+    createdAt: string;
     trackingInfo: Array<{
       number: string | null;
       company: string | null;

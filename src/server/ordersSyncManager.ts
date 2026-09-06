@@ -91,7 +91,24 @@ export class OrdersSyncManager {
     }
 
     await this.orderRepository.upsertOrders([freshOrder], new Date().toISOString());
-    return this.orderRepository.getOrderById(orderId);
+    const cachedOrder = await this.orderRepository.getOrderById(orderId);
+    if (!cachedOrder) {
+      return freshOrder;
+    }
+
+    // Shopify is authoritative for the current AWB; keep local label/rate data attached.
+    return {
+      ...cachedOrder,
+      financialStatus: freshOrder.financialStatus,
+      fulfillmentStatus: freshOrder.fulfillmentStatus,
+      amountToCollect: freshOrder.amountToCollect,
+      paymentPending: freshOrder.paymentPending,
+      fulfillmentTrackingNumber: freshOrder.fulfillmentTrackingNumber,
+      fulfillmentTrackingUrl: freshOrder.fulfillmentTrackingUrl,
+      fulfillmentCarrier: freshOrder.fulfillmentCarrier,
+      lineItems: freshOrder.lineItems,
+      shippingAddress: freshOrder.shippingAddress
+    };
   }
 
   async getState(): Promise<SyncState> {
@@ -112,6 +129,22 @@ export class OrdersSyncManager {
       customer,
       shippingAddress
     );
+  }
+
+  async updateManualFulfillmentByLegacyId(
+    legacyId: string,
+    details: {
+      trackingNumber: string;
+      trackingUrl: string;
+      carrier: string;
+      service: string;
+    }
+  ): Promise<OrderSummary | null> {
+    return this.orderRepository.updateManualFulfillmentByLegacyId(legacyId, details);
+  }
+
+  async clearManualFulfillmentByLegacyId(legacyId: string): Promise<OrderSummary | null> {
+    return this.orderRepository.clearManualFulfillmentByLegacyId(legacyId);
   }
 
   async updatePackageProfileByLegacyId(

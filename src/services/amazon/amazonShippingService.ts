@@ -117,7 +117,9 @@ export class MockAmazonShippingService implements AmazonShippingService {
       labelDataUrl: `data:application/pdf;base64,${Buffer.from("Mock PDF label").toString("base64")}`,
       labelFormat: "PDF",
       labelContentType: "application/pdf",
-      collectAmount: order.paymentPending ? order.amountToCollect : "0.00"
+      collectAmount: order.paymentPending && Number.isFinite(Number(order.amountToCollect)) && Number(order.amountToCollect) > 0
+        ? Number(order.amountToCollect).toFixed(2)
+        : "0.00"
     };
   }
 

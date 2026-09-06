@@ -49,10 +49,19 @@ const ORDER_FIELDS_FRAGMENT = `
               currencyCode
             }
           }
+          taxLines {
+            priceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+          }
         }
       }
     }
     fulfillments(first: 5) {
+      createdAt
       trackingInfo {
         number
         company
@@ -164,9 +173,14 @@ export class ShopifyOrdersService {
 
   private mapOrder(order: ShopifyOrderNode): OrderSummary {
     const total = order.currentTotalPriceSet.shopMoney;
-    const shopifyTracking = order.fulfillments
-      .flatMap((fulfillment) => fulfillment.trackingInfo)
-      .find((info) => info.number);
+    const trackingEntries = order.fulfillments
+      .flatMap((fulfillment) =>
+        fulfillment.trackingInfo
+          .filter((info) => info.number)
+          .map((info) => ({ ...info, fulfillmentCreatedAt: fulfillment.createdAt }))
+      )
+      .sort((a, b) => Date.parse(b.fulfillmentCreatedAt) - Date.parse(a.fulfillmentCreatedAt));
+    const shopifyTracking = trackingEntries[0];
     const outstandingAmountRaw =
       order.totalOutstandingSet?.shopMoney.amount ?? total.amount;
     const outstandingAmount = Number(outstandingAmountRaw);
@@ -211,7 +225,10 @@ export class ShopifyOrdersService {
         quantity: node.quantity,
         unitPrice: node.originalUnitPriceSet?.shopMoney.amount ?? "0.00",
         currencyCode:
-          node.originalUnitPriceSet?.shopMoney.currencyCode ?? total.currencyCode
+          node.originalUnitPriceSet?.shopMoney.currencyCode ?? total.currencyCode,
+        taxAmount: node.taxLines
+          .reduce((sum, taxLine) => sum + Number(taxLine.priceSet.shopMoney.amount), 0)
+          .toFixed(2)
       })),
       bestRateCarrier: null,
       bestRateService: null,

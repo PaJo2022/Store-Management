@@ -226,6 +226,42 @@ export class OrderFulfillmentRepository {
     );
   }
 
+  async resetForRegeneration(id: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db.run(
+      `
+      UPDATE order_fulfillments
+      SET status = 'PENDING',
+          amazon_shipment_id = NULL,
+          amazon_tracking_id = NULL,
+          amazon_carrier = NULL,
+          amazon_service = NULL,
+          amazon_rate_id = NULL,
+          amazon_request_token = NULL,
+          label_document_type = NULL,
+          label_storage_path = NULL,
+          label_content_type = NULL,
+          label_generated_at = NULL,
+          purchased_at = NULL,
+          estimated_delivery_start = NULL,
+          estimated_delivery_end = NULL,
+          shipping_charge = NULL,
+          currency = NULL,
+          package_count = 0,
+          request_payload_json = NULL,
+          rate_response_json = NULL,
+          rate_generated_at = NULL,
+          error_code = NULL,
+          error_message = NULL,
+          last_error_at = NULL,
+          updated_at = ?
+      WHERE id = ? AND status NOT IN ('GETTING_RATES', 'PURCHASING')
+      `,
+      now,
+      id
+    );
+  }
+
   async markFailed(
     id: string,
     status: "FAILED" | "RECONCILIATION_REQUIRED",

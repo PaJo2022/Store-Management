@@ -34,6 +34,36 @@ const FULFILLMENT_CREATE_MUTATION = `
   }
 `;
 
+const ORDER_FULFILLMENTS_QUERY = `
+  query OrderFulfillments($orderId: ID!) {
+    order(id: $orderId) {
+      fulfillments(first: 50) {
+        edges {
+          node {
+            id
+            status
+          }
+        }
+      }
+    }
+  }
+`;
+
+const FULFILLMENT_CANCEL_MUTATION = `
+  mutation CancelFulfillment($id: ID!) {
+    fulfillmentCancel(id: $id) {
+      fulfillment {
+        id
+        status
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 const OPEN_FULFILLMENT_ORDER_STATUSES = new Set(["OPEN", "IN_PROGRESS", "SCHEDULED"]);
 
 export interface ShopifyTrackingInput {
@@ -46,6 +76,21 @@ export interface ShopifyTrackingInput {
 export interface ShopifyFulfillmentSyncResult {
   synced: boolean;
   message?: string;
+}
+
+interface ShopifyOrderFulfillmentsData {
+  order: {
+    fulfillments: {
+      edges: Array<{ node: { id: string; status: string } }>;
+    };
+  } | null;
+}
+
+interface ShopifyFulfillmentCancelData {
+  fulfillmentCancel: {
+    fulfillment: { id: string; status: string } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
 }
 
 export class ShopifyFulfillmentService {
@@ -97,5 +142,31 @@ export class ShopifyFulfillmentService {
     }
 
     return { synced: true };
+  }
+
+  async cancelOrderFulfillments(orderId: string): Promise<ShopifyFulfillmentSyncResult> {
+    if (!orderId.startsWith("gid://shopify/Order/")) {
+      return { synced: false, message: "Not a Shopify order; skipped." };
+    }
+
+    const data = await this.shopifyClient.request<ShopifyOrderFulfillmentsData>(
+      ORDER_FULFILLMENTS_QUERY,
+      { orderId }
+    );
+    const fulfillments = data.order?.fulfillments.edges ?? [];
+    const activeFulfillments = fulfillments.filter((edge) => edge.node.status !== "CANCELLED");
+
+    for (const entry of activeFulfillments) {
+      const result = await this.shopifyClient.request<ShopifyFulfillmentCancelData>(
+        FULFILLMENT_CANCEL_MUTATION,
+        { id: entry.node.id }
+      );
+      const userErrors = result.fulfillmentCancel.userErrors;
+      if (userErrors.length > 0) {
+        return { synced: false, message: userErrors.map((error) => error.message).join("; ") };
+      }
+    }
+
+    return { synced: true, message: activeFulfillments.length > 0 ? "Shopify fulfillment cancelled." : "No active Shopify fulfillment found." };
   }
 }

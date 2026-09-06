@@ -139,6 +139,20 @@ export class FulfillmentRepository {
     return (row?.count ?? 0) > 0;
   }
 
+  async supersedeSuccessfulJobsForOrder(orderId: string): Promise<void> {
+    await this.db.run(
+      `
+      UPDATE fulfillment_jobs
+      SET status = 'SKIPPED',
+          error_message = 'Superseded by a new label generation request.',
+          updated_at = ?
+      WHERE order_id = ? AND status = 'SUCCESS'
+      `,
+      new Date().toISOString(),
+      orderId
+    );
+  }
+
   async getLatestSuccessfulJobForOrder(orderId: string): Promise<FulfillmentJob | null> {
     const row = await this.db.get<FulfillmentJobRow>(
       `

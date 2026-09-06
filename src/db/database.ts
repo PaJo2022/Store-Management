@@ -138,6 +138,18 @@ export async function createDatabase(dbPath: string): Promise<AppDatabase> {
   if (!orderColumns.some((column) => column.name === "shopify_tracking_company")) {
     await db.exec("ALTER TABLE orders_cache ADD COLUMN shopify_tracking_company TEXT");
   }
+  if (!orderColumns.some((column) => column.name === "manual_tracking_number")) {
+    await db.exec("ALTER TABLE orders_cache ADD COLUMN manual_tracking_number TEXT");
+  }
+  if (!orderColumns.some((column) => column.name === "manual_tracking_url")) {
+    await db.exec("ALTER TABLE orders_cache ADD COLUMN manual_tracking_url TEXT");
+  }
+  if (!orderColumns.some((column) => column.name === "manual_tracking_company")) {
+    await db.exec("ALTER TABLE orders_cache ADD COLUMN manual_tracking_company TEXT");
+  }
+  if (!orderColumns.some((column) => column.name === "manual_tracking_service")) {
+    await db.exec("ALTER TABLE orders_cache ADD COLUMN manual_tracking_service TEXT");
+  }
 
   return db;
 }

@@ -56,6 +56,21 @@ export function createServer(
     res.json({ invoiceCompany: env.invoiceCompany });
   });
 
+  app.get("/api/settings/fulfillment-address", (_req, res) => {
+    res.json({
+      fulfillmentAddress: {
+        name: env.amazonShipping.shipFromName,
+        phone: env.amazonShipping.shipFromPhone,
+        address1: env.amazonShipping.shipFromAddress1,
+        address2: env.amazonShipping.shipFromAddress2,
+        city: env.amazonShipping.shipFromCity,
+        province: env.amazonShipping.shipFromState,
+        zip: env.amazonShipping.shipFromPostalCode,
+        country: env.amazonShipping.shipFromCountryCode
+      }
+    });
+  });
+
   app.get("/api/settings/packaging", async (_req, res) => {
     try {
       const profiles = await packagingSettingsService.listProfiles();
@@ -119,14 +134,48 @@ export function createServer(
     try {
       const filter = parseFilter(req.query.status as string | undefined);
       const orders = await syncManager.getOrders(filter);
+      const ordersWithFulfillmentDates = await Promise.all(
+        orders.map(async (order) => {
+          const fulfillment = await orderFulfillmentService.getByOrderId(order.id);
+          return {
+            ...order,
+            estimatedDeliveryStart: fulfillment?.estimatedDeliveryStart ?? null,
+            estimatedDeliveryEnd: fulfillment?.estimatedDeliveryEnd ?? null
+          };
+        })
+      );
       const state = await syncManager.getState();
       res.json({
         filter,
-        count: orders.length,
+        count: ordersWithFulfillmentDates.length,
         shippingMode: env.amazonShipping.mode,
         ...state,
-        orders
+        orders: ordersWithFulfillmentDates
       });
+    } catch (error) {
+      sendApiError(res, error);
+    }
+  });
+
+  app.get("/api/scan/lookup", async (req, res) => {
+    try {
+      const trackingNumber = readOptionalString(req.query.trackingNumber as string | undefined)?.toLowerCase();
+      if (!trackingNumber) {
+        res.status(400).json({ message: "trackingNumber is required." });
+        return;
+      }
+
+      const orders = await syncManager.getOrders("all");
+      const order = orders.find((candidate) =>
+        candidate.fulfillmentTrackingNumber?.trim().toLowerCase() === trackingNumber
+      );
+
+      if (!order) {
+        res.status(404).json({ message: "No order found for this tracking number." });
+        return;
+      }
+
+      res.json({ order });
     } catch (error) {
       sendApiError(res, error);
     }
@@ -361,6 +410,10 @@ export function createServer(
     try {
       const packageProfileId = readOptionalString(req.body?.packageProfileId);
       const financialStatus = readOptionalString(req.body?.financialStatus)?.toUpperCase();
+      const trackingNumber = readOptionalString(req.body?.trackingNumber);
+      const trackingUrl = readOptionalString(req.body?.trackingUrl);
+      const carrier = readOptionalString(req.body?.carrier);
+      const service = readOptionalString(req.body?.service);
       if (financialStatus !== "PENDING" && financialStatus !== "PAID") {
         res.status(400).json({ message: "financialStatus must be PENDING or PAID." });
         return;
@@ -369,6 +422,19 @@ export function createServer(
       if (packageProfileId && !(await packagingSettingsService.getProfileById(packageProfileId))) {
         res.status(400).json({ message: "Package profile not found." });
         return;
+      }
+
+      if (trackingNumber || trackingUrl || carrier || service) {
+        if (!trackingNumber || !trackingUrl || !carrier || !service) {
+          res.status(400).json({ message: "Tracking number, tracking URL, carrier, and service are required together." });
+          return;
+        }
+        try {
+          new URL(trackingUrl);
+        } catch {
+          res.status(400).json({ message: "trackingUrl must be a valid URL." });
+          return;
+        }
       }
 
       const packageUpdated = await syncManager.updatePackageProfileByLegacyId(
@@ -386,6 +452,16 @@ export function createServer(
       );
       if (!paymentUpdated) {
         throw new Error("Order payment status could not be updated.");
+      }
+
+      if (trackingNumber && trackingUrl && carrier && service) {
+        const trackingUpdated = await syncManager.updateManualFulfillmentByLegacyId(
+          req.params.legacyId,
+          { trackingNumber, trackingUrl, carrier, service }
+        );
+        if (!trackingUpdated) {
+          throw new Error("Order tracking details could not be saved.");
+        }
       }
 
       const rateOrder = {
@@ -459,7 +535,8 @@ export function createServer(
 
       const fulfillment = await batchLabelService.generateOrderLabel(
         order.id,
-        readOptionalString(req.body?.selectedRateId)
+        readOptionalString(req.body?.selectedRateId),
+        req.body?.forceNew === true
       );
       const result = {
         success: fulfillment.success,
@@ -488,6 +565,76 @@ export function createServer(
       await orderFulfillmentService.cancelOrder(order);
       const updatedOrder = await syncManager.cancelManualOrderByLegacyId(req.params.legacyId);
       res.json({ message: "Manual order cancelled.", order: updatedOrder });
+    } catch (error) {
+      sendApiError(res, error);
+    }
+  });
+
+  app.delete("/api/orders/:legacyId/fulfillment", async (req, res) => {
+    try {
+      const order = await syncManager.getOrderByLegacyId(req.params.legacyId);
+      if (!order) {
+        res.status(404).json({ message: "Order not found." });
+        return;
+      }
+
+      const refreshedOrder = order.id.startsWith("gid://shopify/Order/")
+        ? await syncManager.refreshOrderFromShopify(order.id)
+        : order;
+      const latestOrder = refreshedOrder ?? order;
+
+      let orderForReset = latestOrder;
+      if (latestOrder.fulfillmentStatus?.toUpperCase() === "FULFILLED") {
+        const cancelled = await batchLabelService.cancelShopifyFulfillment(latestOrder.id);
+        if (!cancelled.synced) {
+          res.status(409).json({
+            alreadyFulfilled: true,
+            order: latestOrder,
+            message: cancelled.message ?? "Shopify fulfillment could not be cancelled."
+          });
+          return;
+        }
+        orderForReset = (await syncManager.refreshOrderFromShopify(latestOrder.id)) ?? latestOrder;
+      }
+
+      const fulfillment = await orderFulfillmentService.getByOrderId(orderForReset.id);
+      const previousAwb = {
+        trackingNumber: orderForReset.fulfillmentTrackingNumber ?? fulfillment?.amazonTrackingId ?? null,
+        carrier: orderForReset.fulfillmentCarrier ?? fulfillment?.amazonCarrier ?? null,
+        service: orderForReset.fulfillmentService ?? fulfillment?.amazonService ?? null,
+        labelUrl: orderForReset.fulfillmentLabelUrl ?? fulfillment?.labelStoragePath ?? null,
+        shippingCost: orderForReset.fulfillmentShippingCost ?? fulfillment?.shippingCharge ?? 0,
+        currencyCode: orderForReset.fulfillmentCurrency ?? fulfillment?.currency ?? orderForReset.currencyCode,
+        collectAmount: orderForReset.paymentPending ? orderForReset.amountToCollect : "0.00"
+      };
+      await batchLabelService.supersedeSuccessfulJobsForOrder(orderForReset.id);
+      await orderFulfillmentService.resetForRegeneration(orderForReset.id);
+
+      const updatedOrder = await syncManager.clearManualFulfillmentByLegacyId(req.params.legacyId);
+      res.json({ message: "Shopify and local AWB details reset. Choose whether to reuse the previous AWB or create a fresh Amazon shipment.", order: updatedOrder ?? orderForReset, previousAwb });
+    } catch (error) {
+      sendApiError(res, error);
+    }
+  });
+
+  app.post("/api/orders/:legacyId/fulfillment/attach", async (req, res) => {
+    try {
+      const order = await syncManager.getOrderByLegacyId(req.params.legacyId);
+      const trackingNumber = readOptionalString(req.body?.trackingNumber);
+      const carrier = readOptionalString(req.body?.carrier);
+      if (!order || !trackingNumber || !carrier) {
+        res.status(400).json({ message: "Order, tracking number, and carrier are required." });
+        return;
+      }
+
+      const result = await batchLabelService.attachShopifyTracking(order.id, trackingNumber, carrier);
+      if (!result.synced) {
+        res.status(409).json({ message: result.message ?? "The previous AWB could not be attached to Shopify." });
+        return;
+      }
+
+      const refreshedOrder = await syncManager.refreshOrderFromShopify(order.id);
+      res.json({ message: "Previous AWB attached to Shopify.", order: refreshedOrder ?? order });
     } catch (error) {
       sendApiError(res, error);
     }

@@ -206,7 +206,7 @@ export class AmazonLiveShippingService implements AmazonShippingService {
       labelDataUrl: this.toDataUrl(labelDoc.format, labelDoc.contents),
       labelFormat: labelDoc.format,
       labelContentType: this.toContentType(labelDoc.format),
-      collectAmount: order.paymentPending ? order.amountToCollect : "0.00"
+      collectAmount: this.getCodAmount(order).toFixed(2)
     };
   }
 
@@ -228,7 +228,7 @@ export class AmazonLiveShippingService implements AmazonShippingService {
         labelDataUrl: `data:application/pdf;base64,${Buffer.from("Dry run PDF label").toString("base64")}`,
         labelFormat: "PDF",
         labelContentType: "application/pdf",
-        collectAmount: order.paymentPending ? order.amountToCollect : "0.00"
+        collectAmount: this.getCodAmount(order).toFixed(2)
       };
     }
 
@@ -321,7 +321,9 @@ export class AmazonLiveShippingService implements AmazonShippingService {
       ...shipFrom
     };
 
-    const packageClientReferenceId = `pkg-${order.id.split("/").pop() ?? order.id}`;
+    const orderReferenceId = order.id.split("/").pop() ?? order.id;
+    const searchableOrderReference = order.name.replace(/^#/, "").trim() || orderReferenceId;
+    const packageClientReferenceId = searchableOrderReference;
     const packageWeightGrams = this.getPackageWeightGrams(packageSpec.weightKg);
     const invoiceDate = this.toAmazonUtcDateTime(order.createdAt || new Date().toISOString());
     const itemWeights = this.allocateItemWeights(order, packageWeightGrams);
@@ -346,12 +348,13 @@ export class AmazonLiveShippingService implements AmazonShippingService {
       }
     }));
 
-    const valueAddedServices = order.paymentPending
+    const codAmount = this.getCodAmount(order);
+    const valueAddedServices = codAmount > 0
       ? {
           collectOnDelivery: {
             amount: {
               unit: order.currencyCode,
-              value: Number(order.amountToCollect)
+              value: codAmount
             }
           }
         }
@@ -428,6 +431,13 @@ export class AmazonLiveShippingService implements AmazonShippingService {
         taxRegistrationNumber: gstId
       }
     ];
+  }
+
+  private getCodAmount(order: OrderSummary): number {
+    const outstanding = Number(order.amountToCollect);
+    return order.paymentPending && Number.isFinite(outstanding) && outstanding > 0
+      ? Number(outstanding.toFixed(2))
+      : 0;
   }
 
   private async getPackageSpec(orderId: string): Promise<PackageSpec> {

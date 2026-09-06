@@ -85,7 +85,7 @@ function run() {
   const child = spawn(npmCommand, npmArgs, {
     stdio: "inherit",
     env,
-    shell: false
+    shell: process.platform === "win32"
   });
 
   child.on("error", (error) => {

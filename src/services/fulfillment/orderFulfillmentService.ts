@@ -182,6 +182,22 @@ export class OrderFulfillmentService {
     return this.repository.getById(id);
   }
 
+  async resetForRegeneration(orderId: string): Promise<void> {
+    const record = await this.repository.getByOrderId(orderId);
+    if (!record) {
+      return;
+    }
+
+    if (record.status === "GETTING_RATES" || record.status === "PURCHASING") {
+      throw new FulfillmentWorkflowError(
+        "FULFILLMENT_IN_PROGRESS",
+        "Fulfillment is currently processing. Try again after it finishes."
+      );
+    }
+
+    await this.repository.resetForRegeneration(record.id);
+  }
+
   async cancelOrder(order: OrderSummary): Promise<void> {
     const record = await this.repository.ensurePendingForOrder(order.id, order.name);
     if (record.status === "FULFILLED") {

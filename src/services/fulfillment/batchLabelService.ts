@@ -56,6 +56,35 @@ export class BatchLabelService {
     private readonly shopifyFulfillmentService?: ShopifyFulfillmentService
   ) {}
 
+  deleteStoredLabel(fileName: string): void {
+    this.labelStorageService.delete(fileName);
+  }
+
+  async supersedeSuccessfulJobsForOrder(orderId: string): Promise<void> {
+    await this.fulfillmentRepository.supersedeSuccessfulJobsForOrder(orderId);
+  }
+
+  async cancelShopifyFulfillment(orderId: string): Promise<{ synced: boolean; message?: string }> {
+    if (!this.shopifyFulfillmentService) {
+      return { synced: false, message: "Shopify fulfillment integration is unavailable." };
+    }
+
+    return this.shopifyFulfillmentService.cancelOrderFulfillments(orderId);
+  }
+
+  async attachShopifyTracking(orderId: string, trackingNumber: string, carrier: string): Promise<{ synced: boolean; message?: string }> {
+    if (!this.shopifyFulfillmentService) {
+      return { synced: false, message: "Shopify fulfillment integration is unavailable." };
+    }
+
+    return this.shopifyFulfillmentService.fulfillOrderWithTracking({
+      orderId,
+      trackingNumber,
+      carrier,
+      trackingUrl: toAmazonTrackingUrl(trackingNumber)
+    });
+  }
+
   private async syncShopifyFulfillment(
     orderId: string,
     trackingNumber: string,
@@ -84,7 +113,8 @@ export class BatchLabelService {
 
   async generateOrderLabel(
     orderId: string,
-    selectedRateId?: string
+    selectedRateId?: string,
+    forceNew = false
   ): Promise<GenerateOrderLabelResult> {
     const normalizedOrderId = orderId.trim();
     if (!normalizedOrderId) {
@@ -100,7 +130,7 @@ export class BatchLabelService {
       const existing = await this.fulfillmentRepository.getLatestSuccessfulJobForOrder(
         normalizedOrderId
       );
-      if (existing && existing.trackingNumber && existing.carrier && existing.labelUrl) {
+      if (!forceNew && existing && existing.trackingNumber && existing.carrier && existing.labelUrl) {
         let existingLabelUrl = existing.labelUrl;
         if (existingLabelUrl.startsWith("data:application/pdf;base64,")) {
           const savedLabel = this.labelStorageService.savePdfLabel(

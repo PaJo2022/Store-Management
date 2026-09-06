@@ -22,6 +22,7 @@ export interface OrderLineItem {
   quantity: number;
   unitPrice: string;
   currencyCode: string;
+  taxAmount?: string;
 }
 
 export interface OrderSummary {
@@ -42,10 +43,13 @@ export interface OrderSummary {
   bestRateAmount?: number | null;
   bestRateCurrency?: string | null;
   fulfillmentTrackingNumber?: string | null;
+  fulfillmentTrackingUrl?: string | null;
   fulfillmentLabelUrl?: string | null;
   fulfillmentCarrier?: string | null;
   fulfillmentService?: string | null;
   fulfillmentShippingCost?: number | null;
   fulfillmentCurrency?: string | null;
+  estimatedDeliveryStart?: string | null;
+  estimatedDeliveryEnd?: string | null;
   packageProfileId?: string | null;
 }
