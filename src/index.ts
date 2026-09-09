@@ -71,8 +71,7 @@ async function main(): Promise<void> {
     );
     const syncManager = new OrdersSyncManager(
       ordersService,
-      orderRepository,
-      orderFulfillmentService
+      orderRepository
     );
     const batchLabelService = new BatchLabelService(
       orderRepository,

@@ -393,6 +393,20 @@ h1 {
   line-height: 1.55;
 }
 
+.production-order-breakdown {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 260px;
+  color: #475569;
+  font-size: 0.76rem;
+}
+
+.production-order-breakdown span {
+  padding: 0.25rem 0.4rem;
+  border-left: 3px solid #dc2626;
+  background: #fff7f7;
+}
+
 .scanner-layout {
   display: grid;
   grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);

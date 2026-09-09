@@ -159,9 +159,9 @@ export class OrderRepository {
   async listOrders(filter: OrderFilter): Promise<OrderSummary[]> {
     let whereClause = "";
     if (filter === "fulfilled") {
-      whereClause = "WHERE UPPER(o.fulfillment_status) = 'FULFILLED'";
+      whereClause = "WHERE UPPER(CASE WHEN o.id LIKE 'gid://store/ManualOrder/%' AND (f.status = 'FULFILLED' OR o.manual_tracking_number IS NOT NULL) THEN 'FULFILLED' ELSE o.fulfillment_status END) = 'FULFILLED'";
     } else if (filter === "open") {
-      whereClause = "WHERE UPPER(o.fulfillment_status) NOT IN ('FULFILLED', 'CANCELLED')";
+      whereClause = "WHERE UPPER(CASE WHEN o.id LIKE 'gid://store/ManualOrder/%' AND (f.status = 'FULFILLED' OR o.manual_tracking_number IS NOT NULL) THEN 'FULFILLED' ELSE o.fulfillment_status END) NOT IN ('FULFILLED', 'CANCELLED')";
     }
 
     const rows = await this.db.all<OrderRow[]>(
@@ -170,7 +170,7 @@ export class OrderRepository {
              o.name,
              o.created_at,
              o.financial_status,
-             o.fulfillment_status,
+             CASE WHEN o.id LIKE 'gid://store/ManualOrder/%' AND (f.status = 'FULFILLED' OR o.manual_tracking_number IS NOT NULL) THEN 'FULFILLED' ELSE o.fulfillment_status END AS fulfillment_status,
              o.total_price,
              o.currency_code,
              o.amount_to_collect,
@@ -209,7 +209,7 @@ export class OrderRepository {
              o.name,
              o.created_at,
              o.financial_status,
-             o.fulfillment_status,
+             CASE WHEN o.id LIKE 'gid://store/ManualOrder/%' AND (f.status = 'FULFILLED' OR o.manual_tracking_number IS NOT NULL) THEN 'FULFILLED' ELSE o.fulfillment_status END AS fulfillment_status,
              o.total_price,
              o.currency_code,
              o.amount_to_collect,
@@ -248,7 +248,7 @@ export class OrderRepository {
              o.name,
              o.created_at,
              o.financial_status,
-             o.fulfillment_status,
+             CASE WHEN o.id LIKE 'gid://store/ManualOrder/%' AND (f.status = 'FULFILLED' OR o.manual_tracking_number IS NOT NULL) THEN 'FULFILLED' ELSE o.fulfillment_status END AS fulfillment_status,
              o.total_price,
              o.currency_code,
              o.amount_to_collect,
@@ -273,9 +273,13 @@ export class OrderRepository {
         ON f.shopify_order_id = o.id
        AND f.status IN ('RATES_READY', 'PURCHASING', 'FULFILLED')
       WHERE o.legacy_id = ?
+        OR o.id = ?
+        OR o.id = ?
         OR o.name LIKE ?
       `,
       legacyId,
+      legacyId,
+      `gid://store/ManualOrder/${legacyId}`,
       `MANUAL-%-${legacyId.toUpperCase()}`
     );
 
@@ -294,7 +298,7 @@ export class OrderRepository {
              o.name,
              o.created_at,
              o.financial_status,
-             o.fulfillment_status,
+             CASE WHEN o.id LIKE 'gid://store/ManualOrder/%' AND (f.status = 'FULFILLED' OR o.manual_tracking_number IS NOT NULL) THEN 'FULFILLED' ELSE o.fulfillment_status END AS fulfillment_status,
              o.total_price,
              o.currency_code,
              o.amount_to_collect,
@@ -368,15 +372,18 @@ export class OrderRepository {
           manual_tracking_url = ?,
           manual_tracking_company = ?,
           manual_tracking_service = ?,
+          fulfillment_status = CASE WHEN id LIKE 'gid://store/ManualOrder/%' THEN 'FULFILLED' ELSE fulfillment_status END,
           synced_at = ?
-      WHERE legacy_id = ?
+        WHERE legacy_id = ? OR id = ? OR id = ?
       `,
       details.trackingNumber,
       details.trackingUrl,
       details.carrier,
       details.service,
       new Date().toISOString(),
-      legacyId
+      legacyId,
+      legacyId,
+      `gid://store/ManualOrder/${legacyId}`
     );
 
     return (result.changes ?? 0) === 0 ? null : this.getOrderByLegacyId(legacyId);
@@ -390,11 +397,14 @@ export class OrderRepository {
           manual_tracking_url = NULL,
           manual_tracking_company = NULL,
           manual_tracking_service = NULL,
+          fulfillment_status = CASE WHEN id LIKE 'gid://store/ManualOrder/%' THEN 'UNFULFILLED' ELSE fulfillment_status END,
           synced_at = ?
-      WHERE legacy_id = ?
+        WHERE legacy_id = ? OR id = ? OR id = ?
       `,
       new Date().toISOString(),
-      legacyId
+      legacyId,
+      legacyId,
+      `gid://store/ManualOrder/${legacyId}`
     );
 
     return (result.changes ?? 0) === 0 ? null : this.getOrderByLegacyId(legacyId);
@@ -405,10 +415,12 @@ export class OrderRepository {
     packageProfileId: string | null
   ): Promise<OrderSummary | null> {
     const result = await this.db.run(
-      "UPDATE orders_cache SET package_profile_id = ?, synced_at = ? WHERE legacy_id = ?",
+      "UPDATE orders_cache SET package_profile_id = ?, synced_at = ? WHERE legacy_id = ? OR id = ? OR id = ?",
       packageProfileId,
       new Date().toISOString(),
-      legacyId
+      legacyId,
+      legacyId,
+      `gid://store/ManualOrder/${legacyId}`
     );
 
     if ((result.changes ?? 0) === 0) {
@@ -433,13 +445,15 @@ export class OrderRepository {
           END,
           payment_status_override = 1,
           synced_at = ?
-      WHERE legacy_id = ?
+      WHERE legacy_id = ? OR id = ? OR id = ?
       `,
       status,
       status === "PENDING" ? 1 : 0,
       status,
       new Date().toISOString(),
-      legacyId
+      legacyId,
+      legacyId,
+      `gid://store/ManualOrder/${legacyId}`
     );
     return (result.changes ?? 0) === 0 ? null : this.getOrderByLegacyId(legacyId);
   }

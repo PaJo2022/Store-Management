@@ -52,6 +52,7 @@ interface OrderSummary {
   bestRateAmount: number | null
   bestRateCurrency: string | null
   fulfillmentTrackingNumber?: string | null
+  fulfillmentTrackingUrl?: string | null
   fulfillmentLabelUrl?: string | null
   fulfillmentCarrier?: string | null
   fulfillmentService?: string | null
@@ -168,6 +169,7 @@ interface GeneratedShipment {
   currencyCode: string
   labelUrl: string
   collectAmount: string
+  trackingUrl?: string | null
 }
 
 interface GenerateLabelResponse {
@@ -249,6 +251,13 @@ interface InvoiceFulfillmentForm {
   carrier: string
   service: string
   trackingNumber: string
+}
+
+interface ManualFulfillmentForm {
+  carrier: string
+  service: string
+  trackingNumber: string
+  trackingUrl: string
 }
 
 interface ManualOrderForm {
@@ -849,6 +858,10 @@ function toEpochMs(value: string | null | undefined): number {
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed
 }
 
+function getOrderTrackingUrl(order: OrderSummary, trackingNumber: string): string {
+  return order.fulfillmentTrackingUrl ?? toAmazonTrackingUrl(trackingNumber)
+}
+
 function selectBestRateOption(rates: ShippingRateOption[]): ShippingRateOption | null {
   const eligible = rates.filter((rate) => !rate.requiresAdditionalInputs)
   if (eligible.length === 0) {
@@ -878,6 +891,7 @@ function DashboardPage() {
   const navigate = useNavigate()
   const [activeFilter, setActiveFilter] = useState<OrderFilter>('all')
   const [orders, setOrders] = useState<OrderSummary[]>([])
+  const [packageProfiles, setPackageProfiles] = useState<PackageProfile[]>([])
   const [shippingMode, setShippingMode] = useState<'mock' | 'sandbox' | 'live'>('mock')
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -890,6 +904,7 @@ function DashboardPage() {
   const [loadingRates, setLoadingRates] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [carrierFilter, setCarrierFilter] = useState<'all' | 'rated' | 'unrated'>('all')
+  const [amazonShippingFilter, setAmazonShippingFilter] = useState<'all' | 'unavailable'>('all')
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'cod' | 'prepaid' | 'partial'>('all')
   const [urgencyFilter, setUrgencyFilter] = useState<'all' | 'overdue'>('all')
   const [productFilter, setProductFilter] = useState<string>('all')
@@ -968,14 +983,21 @@ function DashboardPage() {
     setError(null)
 
     try {
-      const response = await fetch(`/api/orders?status=${filter}`)
-      const data = (await response.json()) as OrdersResponse
+      const [ordersResponse, packagingResponse] = await Promise.all([
+        fetch(`/api/orders?status=${filter}`),
+        fetch('/api/settings/packaging')
+      ])
+      const data = (await ordersResponse.json()) as OrdersResponse
+      const packagingData = (await packagingResponse.json()) as PackagingSettingsResponse
 
-      if (!response.ok) {
+      if (!ordersResponse.ok) {
         throw new Error(readMessage(data) ?? 'Failed to fetch orders.')
       }
 
       setOrders(data.orders)
+      if (packagingResponse.ok) {
+        setPackageProfiles(packagingData.profiles)
+      }
       setShippingMode(data.shippingMode ?? 'mock')
       setLastSyncedAt(data.lastSyncedAt)
       setSelectedOrderIds([])
@@ -1010,7 +1032,7 @@ function DashboardPage() {
 
       setLastSyncedAt(data.lastSyncedAt)
       await loadOrders(activeFilter)
-      setSuccess('Orders synced and rates refreshed.')
+      setSuccess('Orders synced from Shopify.')
     } catch (requestError) {
       const message =
         requestError instanceof Error ? requestError.message : 'Unknown error while syncing orders.'
@@ -1129,6 +1151,10 @@ function DashboardPage() {
         return false
       }
 
+      if (amazonShippingFilter === 'unavailable' && typeof order.bestRateAmount === 'number') {
+        return false
+      }
+
       if (cityFilter !== 'all' && (order.shippingAddress?.city ?? '').trim() !== cityFilter) {
         return false
       }
@@ -1174,7 +1200,7 @@ function DashboardPage() {
     }
 
     return [...visibleOrders].sort((a, b) => toEpochMs(a.createdAt) - toEpochMs(b.createdAt))
-  }, [activeFilter, carrierFilter, cityFilter, dateFromFilter, dateToFilter, orders, paymentFilter, productFilter, productMatchFilter, searchQuery, urgencyFilter])
+  }, [activeFilter, amazonShippingFilter, carrierFilter, cityFilter, dateFromFilter, dateToFilter, orders, paymentFilter, productFilter, productMatchFilter, searchQuery, urgencyFilter])
 
   const allVisibleSelected = useMemo(() => {
     const visibleIds = filteredOrders.map((order) => order.id)
@@ -1576,6 +1602,15 @@ function DashboardPage() {
           </select>
           <select
             className="ops-select"
+            value={amazonShippingFilter}
+            onChange={(event) => setAmazonShippingFilter(event.target.value as 'all' | 'unavailable')}
+            aria-label="Amazon shipping availability"
+          >
+            <option value="all">All Amazon Rates</option>
+            <option value="unavailable">Amazon Cannot Ship</option>
+          </select>
+          <select
+            className="ops-select"
             value={paymentFilter}
             onChange={(event) => setPaymentFilter(event.target.value as 'all' | 'cod' | 'prepaid' | 'partial')}
           >
@@ -1767,6 +1802,9 @@ function DashboardPage() {
                 const carrierLabel = order.bestRateCarrier
                   ? `${order.bestRateCarrier}${order.bestRateService ? ` - ${order.bestRateService}` : ''}`
                   : '--'
+                const packageProfile = order.packageProfileId
+                  ? packageProfiles.find((profile) => profile.id === order.packageProfileId)
+                  : undefined
 
                 return (
                   <tr key={order.id}>
@@ -1789,7 +1827,11 @@ function DashboardPage() {
                     <td>{toOrderCustomer(order.shippingAddress)}</td>
                     <td>{shippingCostLabel}</td>
                     <td>
-                      <span className="package-pill">{order.lineItems.length} Package(s)</span>
+                      <span className="package-pill">
+                        {packageProfile
+                          ? `${packageProfile.name} | ${packageProfile.lengthCm} x ${packageProfile.widthCm} x ${packageProfile.heightCm} cm | ${packageProfile.weightKg} kg`
+                          : 'Package not selected'}
+                      </span>
                     </td>
                     <td>
                       <span className="product-pill">
@@ -2342,7 +2384,7 @@ function FulfillmentPlanPage() {
   }, [loadOpenOrders])
 
   const productPlan = useMemo(() => {
-    const totals = new Map<string, { quantity: number; orderCount: number }>()
+    const totals = new Map<string, { quantity: number; orderCount: number; orders: Array<{ orderName: string; customer: string; quantity: number }> }>()
 
     for (const order of orders) {
       const quantitiesByProduct = new Map<string, number>()
@@ -2352,10 +2394,15 @@ function FulfillmentPlanPage() {
       }
 
       for (const [product, quantity] of quantitiesByProduct) {
-        const current = totals.get(product) ?? { quantity: 0, orderCount: 0 }
+        const current = totals.get(product) ?? { quantity: 0, orderCount: 0, orders: [] }
         totals.set(product, {
           quantity: current.quantity + quantity,
-          orderCount: current.orderCount + 1
+          orderCount: current.orderCount + 1,
+          orders: [...current.orders, {
+            orderName: order.name,
+            customer: order.shippingAddress?.name ?? 'Customer',
+            quantity
+          }]
         })
       }
     }
@@ -2395,19 +2442,28 @@ function FulfillmentPlanPage() {
           <div className="ops-card-header">
             <div>
               <h3>Production / Packing Plan</h3>
-              <p className="muted compact">Make or gather these quantities to fulfill all current open orders.</p>
+              <p className="muted compact">Make or gather the total quantity shown. The order breakdown shows exactly where each product is needed.</p>
             </div>
             <span className="ops-mode-chip">{totalUnits} units</span>
           </div>
           <div className="orders-table-wrap">
             <table className="orders-table">
-              <thead><tr><th>Product</th><th>Quantity Needed</th><th>Open Orders</th><th>Progress</th></tr></thead>
+              <thead><tr><th>Product to Make</th><th>Total Quantity</th><th>Orders Needed For</th><th>Order Breakdown</th><th>Share</th></tr></thead>
               <tbody>
                 {productPlan.map((item) => (
                   <tr key={item.product}>
                     <td><strong>{item.product}</strong></td>
                     <td><span className="package-pill">{item.quantity} unit(s)</span></td>
                     <td>{item.orderCount}</td>
+                    <td>
+                      <div className="production-order-breakdown">
+                        {item.orders.map((entry) => (
+                          <span key={`${item.product}-${entry.orderName}`}>
+                            <strong>{entry.orderName}</strong> {entry.customer} x {entry.quantity}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
                     <td><div className="fulfillment-bar-track"><div className="fulfillment-bar to-ship" style={{ width: `${Math.max(4, (item.quantity / totalUnits) * 100)}%` }} /></div></td>
                   </tr>
                 ))}
@@ -2555,6 +2611,8 @@ function OrderDetailsPage() {
   const [resettingFulfillment, setResettingFulfillment] = useState(false)
   const [cancellingOrder, setCancellingOrder] = useState(false)
   const [showInvoiceFulfillmentForm, setShowInvoiceFulfillmentForm] = useState(false)
+  const [showManualFulfillmentForm, setShowManualFulfillmentForm] = useState(false)
+  const [manualFulfillmentForm, setManualFulfillmentForm] = useState<ManualFulfillmentForm>({ carrier: '', service: '', trackingNumber: '', trackingUrl: '' })
   const [invoiceFulfillmentForm, setInvoiceFulfillmentForm] = useState<InvoiceFulfillmentForm>({
     carrier: '',
     service: '',
@@ -2756,8 +2814,18 @@ function OrderDetailsPage() {
         setSelectedPackageProfileId(nextOrder?.packageProfileId ?? '')
         setSelectedPaymentStatus(nextOrder?.paymentPending ? 'PENDING' : 'PAID')
 
-        setShipment(null)
-        setShipmentAlreadyExists(false)
+        setShipment(nextOrder?.fulfillmentTrackingNumber ? {
+          shipmentId: nextOrder.id,
+          trackingId: nextOrder.fulfillmentTrackingNumber,
+          carrier: nextOrder.fulfillmentCarrier ?? 'Carrier unavailable',
+          service: nextOrder.fulfillmentService ?? 'Service unavailable',
+          shippingCost: nextOrder.fulfillmentShippingCost ?? 0,
+          currencyCode: nextOrder.fulfillmentCurrency ?? nextOrder.currencyCode,
+          labelUrl: nextOrder.fulfillmentLabelUrl ?? '',
+          collectAmount: nextOrder.paymentPending ? nextOrder.amountToCollect : '0.00',
+          trackingUrl: nextOrder.fulfillmentTrackingUrl
+        } : null)
+        setShipmentAlreadyExists(Boolean(nextOrder?.fulfillmentTrackingNumber))
         setShowExistingAwbChoice(false)
 
         await Promise.all([loadDefaultPackage(), loadFulfillmentAddress()])
@@ -3055,6 +3123,32 @@ function OrderDetailsPage() {
     }
   }, [legacyId])
 
+  const saveManualFulfillment = useCallback(async () => {
+    if (!legacyId || !order || !manualFulfillmentForm.carrier.trim() || !manualFulfillmentForm.service.trim() || !manualFulfillmentForm.trackingNumber.trim() || !manualFulfillmentForm.trackingUrl.trim()) {
+      setError('Enter carrier, service, tracking number, and tracking URL.')
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/orders/${legacyId}/fulfillment-details`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packageProfileId: order.packageProfileId ?? defaultPackage?.id,
+          financialStatus: selectedPaymentStatus,
+          ...manualFulfillmentForm
+        })
+      })
+      const payload = (await response.json()) as { order?: OrderSummary; message?: string }
+      if (!response.ok || !payload.order) throw new Error(payload.message ?? 'Failed to save fulfillment details.')
+      setOrder(payload.order)
+      setShowManualFulfillmentForm(false)
+      setSuccess('Fulfillment details saved.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Failed to save fulfillment details.')
+    }
+  }, [defaultPackage?.id, legacyId, manualFulfillmentForm, order, selectedPaymentStatus])
+
   const openAddressEditor = useCallback(() => {
     if (!order) {
       return
@@ -3200,6 +3294,11 @@ function OrderDetailsPage() {
                   {cancellingOrder ? 'Cancelling...' : 'Cancel Manual Order'}
                 </button>
               ) : null}
+              {order.fulfillmentStatus !== 'CANCELLED' && !order.fulfillmentTrackingNumber ? (
+                <button className="filter-button" onClick={() => setShowManualFulfillmentForm(true)}>
+                  Add External Tracking
+                </button>
+              ) : null}
               <button
                 className="sync-button"
                 disabled={generatingLabel || resettingFulfillment || order.fulfillmentStatus === 'CANCELLED'}
@@ -3209,23 +3308,27 @@ function OrderDetailsPage() {
                 {generatingLabel
                   ? 'Generating Label...'
                   : order.fulfillmentTrackingNumber
-                    ? 'Choose AWB'
+                    ? 'Generate New Fulfillment'
                     : 'Generate Label'}
               </button>
-              <button
-                className="filter-button danger-action"
-                disabled={resettingFulfillment || generatingLabel}
-                onClick={() => void resetFulfillment()}
-              >
-                {resettingFulfillment ? 'Checking...' : 'Delete AWB / Reset'}
-              </button>
-              <button
-                className="filter-button"
-                disabled={resettingFulfillment || generatingLabel}
-                onClick={() => void syncAwbFromShopify()}
-              >
-                Sync AWB from Shopify
-              </button>
+              {order.fulfillmentTrackingNumber ? (
+                <button
+                  className="filter-button danger-action"
+                  disabled={resettingFulfillment || generatingLabel}
+                  onClick={() => void resetFulfillment()}
+                >
+                  {resettingFulfillment ? 'Checking...' : 'Delete Fulfillment'}
+                </button>
+              ) : null}
+              {order.id.startsWith('gid://shopify/Order/') ? (
+                <button
+                  className="filter-button"
+                  disabled={resettingFulfillment || generatingLabel}
+                  onClick={() => void syncAwbFromShopify()}
+                >
+                  Sync Tracking from Shopify
+                </button>
+              ) : null}
             </div>
           </section>
 
@@ -3451,7 +3554,7 @@ function OrderDetailsPage() {
                   <h3>{shipmentAlreadyExists ? 'Shipment Already Exists' : 'Shipment Created'}</h3>
                   <p>
                     <strong>AWB / Tracking:</strong>{' '}
-                    <a href={toAmazonTrackingUrl(shipment.trackingId)} target="_blank" rel="noreferrer">
+                    <a href={shipment.trackingUrl ?? getOrderTrackingUrl(order, shipment.trackingId)} target="_blank" rel="noreferrer">
                       {shipment.trackingId}
                     </a>
                   </p>
@@ -3485,7 +3588,7 @@ function OrderDetailsPage() {
                   <p className="tracking-number">{shipment.trackingId}</p>
                   <a
                     className="sync-button tracking-link"
-                    href={toAmazonTrackingUrl(shipment.trackingId)}
+                    href={shipment.trackingUrl ?? getOrderTrackingUrl(order, shipment.trackingId)}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -3693,6 +3796,27 @@ function OrderDetailsPage() {
                   <button className="modal-link-button save" type="button" onClick={submitInvoiceFulfillment}>
                     Generate Invoice
                   </button>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {showManualFulfillmentForm ? (
+            <section className="details-modal-backdrop" role="dialog" aria-modal="true" aria-label="Add external tracking details">
+              <div className="details-modal-sheet invoice-fulfillment-modal">
+                <div className="details-modal-body">
+                  <h2>Add External Tracking</h2>
+                  <p className="muted">Save fulfillment completed with another courier for this order.</p>
+                  <div className="field-grid">
+                    <label>Carrier<input type="text" value={manualFulfillmentForm.carrier} onChange={(event) => setManualFulfillmentForm((current) => ({ ...current, carrier: event.target.value }))} /></label>
+                    <label>Service<input type="text" value={manualFulfillmentForm.service} onChange={(event) => setManualFulfillmentForm((current) => ({ ...current, service: event.target.value }))} /></label>
+                    <label>Tracking Number<input type="text" value={manualFulfillmentForm.trackingNumber} onChange={(event) => setManualFulfillmentForm((current) => ({ ...current, trackingNumber: event.target.value }))} /></label>
+                    <label>Tracking URL<input type="url" value={manualFulfillmentForm.trackingUrl} onChange={(event) => setManualFulfillmentForm((current) => ({ ...current, trackingUrl: event.target.value }))} /></label>
+                  </div>
+                </div>
+                <div className="details-modal-footer">
+                  <button className="modal-link-button" type="button" onClick={() => setShowManualFulfillmentForm(false)}>Cancel</button>
+                  <button className="modal-link-button save" type="button" onClick={() => void saveManualFulfillment()}>Save Fulfillment</button>
                 </div>
               </div>
             </section>

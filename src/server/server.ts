@@ -430,7 +430,11 @@ export function createServer(
           return;
         }
         try {
-          new URL(trackingUrl);
+          const parsedTrackingUrl = new URL(trackingUrl);
+          if (!['http:', 'https:'].includes(parsedTrackingUrl.protocol)) {
+            res.status(400).json({ message: "trackingUrl must use http or https protocol." });
+            return;
+          }
         } catch {
           res.status(400).json({ message: "trackingUrl must be a valid URL." });
           return;
@@ -454,10 +458,16 @@ export function createServer(
         throw new Error("Order payment status could not be updated.");
       }
 
-      if (trackingNumber && trackingUrl && carrier && service) {
+      const hasExternalFulfillment = Boolean(trackingNumber && trackingUrl && carrier && service);
+      if (hasExternalFulfillment) {
         const trackingUpdated = await syncManager.updateManualFulfillmentByLegacyId(
           req.params.legacyId,
-          { trackingNumber, trackingUrl, carrier, service }
+          {
+            trackingNumber: trackingNumber!,
+            trackingUrl: trackingUrl!,
+            carrier: carrier!,
+            service: service!
+          }
         );
         if (!trackingUpdated) {
           throw new Error("Order tracking details could not be saved.");
@@ -471,9 +481,17 @@ export function createServer(
         amountToCollect:
           financialStatus === "PAID" ? "0.00" : paymentUpdated.amountToCollect
       };
-      const rates = await orderFulfillmentService.refreshBestRatesForOrder(rateOrder);
+      const rates = hasExternalFulfillment
+        ? []
+        : await orderFulfillmentService.refreshBestRatesForOrder(rateOrder);
       const order = await syncManager.getOrderByLegacyId(req.params.legacyId);
-      res.json({ message: "Order changes saved and rates refreshed.", order, rates });
+      res.json({
+        message: hasExternalFulfillment
+          ? "Fulfillment details saved."
+          : "Order changes saved and rates refreshed.",
+        order,
+        rates
+      });
     } catch (error) {
       sendApiError(res, error);
     }

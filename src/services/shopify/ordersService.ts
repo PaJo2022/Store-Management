@@ -193,6 +193,19 @@ export class ShopifyOrdersService {
     const isPending = financialStatus === "PENDING";
     const paymentPending =
       isPartiallyPaid || isPending || looksLikeCod || outstandingAmount > 0;
+    const lineItems = order.lineItems.edges.map(({ node }) => ({
+      title: node.title,
+      quantity: node.quantity,
+      unitPrice: node.originalUnitPriceSet?.shopMoney.amount ?? "0.00",
+      currencyCode:
+        node.originalUnitPriceSet?.shopMoney.currencyCode ?? total.currencyCode,
+      taxAmount: node.taxLines
+        .reduce((sum, taxLine) => sum + Number(taxLine.priceSet.shopMoney.amount), 0)
+        .toFixed(2)
+    }));
+    const visibleLineItems = isPartiallyPaid
+      ? this.removeLowerPricedDuplicateProducts(lineItems)
+      : lineItems;
 
     return {
       id: order.id,
@@ -220,16 +233,7 @@ export class ShopifyOrdersService {
             phone: order.shippingAddress.phone ?? undefined
           }
         : null,
-      lineItems: order.lineItems.edges.map(({ node }) => ({
-        title: node.title,
-        quantity: node.quantity,
-        unitPrice: node.originalUnitPriceSet?.shopMoney.amount ?? "0.00",
-        currencyCode:
-          node.originalUnitPriceSet?.shopMoney.currencyCode ?? total.currencyCode,
-        taxAmount: node.taxLines
-          .reduce((sum, taxLine) => sum + Number(taxLine.priceSet.shopMoney.amount), 0)
-          .toFixed(2)
-      })),
+      lineItems: visibleLineItems,
       bestRateCarrier: null,
       bestRateService: null,
       bestRateAmount: null,
@@ -241,5 +245,21 @@ export class ShopifyOrdersService {
       fulfillmentShippingCost: null,
       fulfillmentCurrency: null
     };
+  }
+
+  private removeLowerPricedDuplicateProducts(
+    lineItems: OrderSummary["lineItems"]
+  ): OrderSummary["lineItems"] {
+    const highestPricedByProduct = new Map<string, OrderSummary["lineItems"][number]>();
+
+    for (const item of lineItems) {
+      const productKey = item.title.trim().toLocaleLowerCase();
+      const existing = highestPricedByProduct.get(productKey);
+      if (!existing || Number(item.unitPrice) > Number(existing.unitPrice)) {
+        highestPricedByProduct.set(productKey, item);
+      }
+    }
+
+    return Array.from(highestPricedByProduct.values());
   }
 }

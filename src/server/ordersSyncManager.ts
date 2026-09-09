@@ -2,10 +2,6 @@ import { OrderSummary } from "../models/order";
 import { OrderRepository } from "../repositories/orderRepository";
 import { ShopifyOrdersService } from "../services/shopify/ordersService";
 
-interface RatesPrimer {
-  primeBestRates(orders: OrderSummary[]): Promise<void>;
-}
-
 export type OrderFilter = "all" | "open" | "fulfilled";
 
 export interface SyncState {
@@ -25,8 +21,7 @@ export class OrdersSyncManager {
 
   constructor(
     private readonly ordersService: ShopifyOrdersService,
-    private readonly orderRepository: OrderRepository,
-    private readonly ratesPrimer?: RatesPrimer
+    private readonly orderRepository: OrderRepository
   ) {}
 
   async sync(options: SyncOptions | number = 50): Promise<SyncState> {
@@ -45,18 +40,12 @@ export class OrdersSyncManager {
 
     this.lastSyncedAt = new Date().toISOString();
     await this.orderRepository.upsertOrders(orders, this.lastSyncedAt);
-    if (this.ratesPrimer) {
-      await this.ratesPrimer.primeBestRates(orders);
-    }
 
     return this.getState();
   }
 
   async getOrders(filter: OrderFilter): Promise<OrderSummary[]> {
-    const orderCount = await this.orderRepository.countOrders();
-    if (orderCount === 0) {
-      await this.sync({ limit: 50 });
-    }
+    await this.sync({ fullSync: true });
 
     return this.orderRepository.listOrders(filter);
   }
@@ -103,9 +92,10 @@ export class OrdersSyncManager {
       fulfillmentStatus: freshOrder.fulfillmentStatus,
       amountToCollect: freshOrder.amountToCollect,
       paymentPending: freshOrder.paymentPending,
-      fulfillmentTrackingNumber: freshOrder.fulfillmentTrackingNumber,
-      fulfillmentTrackingUrl: freshOrder.fulfillmentTrackingUrl,
-      fulfillmentCarrier: freshOrder.fulfillmentCarrier,
+      fulfillmentTrackingNumber: freshOrder.fulfillmentTrackingNumber ?? cachedOrder.fulfillmentTrackingNumber,
+      fulfillmentTrackingUrl: freshOrder.fulfillmentTrackingUrl ?? cachedOrder.fulfillmentTrackingUrl,
+      fulfillmentCarrier: freshOrder.fulfillmentCarrier ?? cachedOrder.fulfillmentCarrier,
+      fulfillmentService: freshOrder.fulfillmentService ?? cachedOrder.fulfillmentService,
       lineItems: freshOrder.lineItems,
       shippingAddress: freshOrder.shippingAddress
     };

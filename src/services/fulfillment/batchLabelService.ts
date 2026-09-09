@@ -285,7 +285,11 @@ export class BatchLabelService {
           const requestedRateId = input.selectedRatesByOrderId?.[order.id];
           const selectedRate = requestedRateId
             ? quote.rates.find((rate) => rate.rateId === requestedRateId) ??
-              this.selectBestRate(quote.rates)
+              (() => {
+                throw new Error(
+                  `Selected rate ${requestedRateId} is not available for ${order.name}.`
+                );
+              })()
             : this.selectBestRate(quote.rates);
 
           label = await this.amazonShippingService.purchaseShipment(

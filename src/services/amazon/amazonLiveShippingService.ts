@@ -330,7 +330,7 @@ export class AmazonLiveShippingService implements AmazonShippingService {
 
     const items = order.lineItems.map((lineItem, index) => ({
       itemIdentifier: `${packageClientReferenceId}-${index + 1}`,
-      description: lineItem.title.slice(0, 120),
+      description: `${lineItem.quantity} x ${lineItem.title}`.slice(0, 120),
       quantity: lineItem.quantity,
       weight: {
         unit: "GRAM",
@@ -435,38 +435,50 @@ export class AmazonLiveShippingService implements AmazonShippingService {
 
   private getCodAmount(order: OrderSummary): number {
     const outstanding = Number(order.amountToCollect);
-    return order.paymentPending && Number.isFinite(outstanding) && outstanding > 0
-      ? Number(outstanding.toFixed(2))
-      : 0;
+    if (!order.paymentPending || !Number.isFinite(outstanding) || outstanding <= 0) {
+      return 0;
+    }
+
+    const total = Number(order.totalPrice);
+    if (!Number.isFinite(total) || outstanding > total) {
+      throw new AmazonIntegrationError(
+        "Collect-on-delivery amount cannot exceed the order total."
+      );
+    }
+
+    return Number(outstanding.toFixed(2));
   }
 
   private async getPackageSpec(orderId: string): Promise<PackageSpec> {
+    let packageSpec: PackageSpec | null = null;
     if (this.packageSettingsProvider) {
       try {
         const custom = await this.packageSettingsProvider.getDefaultPackageSpec(orderId);
-        if (
-          Number.isFinite(custom.lengthCm) &&
-          custom.lengthCm > 0 &&
-          Number.isFinite(custom.widthCm) &&
-          custom.widthCm > 0 &&
-          Number.isFinite(custom.heightCm) &&
-          custom.heightCm > 0 &&
-          Number.isFinite(custom.weightKg) &&
-          custom.weightKg > 0
-        ) {
-          return custom;
-        }
+        packageSpec = custom;
       } catch {
         // Fall back to env defaults if settings are unavailable.
       }
     }
 
-    return {
+    const resolved = packageSpec ?? {
       lengthCm: this.config.packageLengthCm,
       widthCm: this.config.packageWidthCm,
       heightCm: this.config.packageHeightCm,
       weightKg: Number(this.config.packageWeightKg)
     };
+    const dimensions = [resolved.lengthCm, resolved.widthCm, resolved.heightCm];
+    if (
+      dimensions.some((value) => !Number.isFinite(value) || value < 1 || value > 300) ||
+      !Number.isFinite(resolved.weightKg) ||
+      resolved.weightKg < 0.1 ||
+      resolved.weightKg > 70
+    ) {
+      throw new AmazonIntegrationError(
+        "Package dimensions must be 1-300 cm and weight must be 0.1-70 kg."
+      );
+    }
+
+    return resolved;
   }
 
   private pickRate(rates: Array<ShippingRateOption>, selectedRateId?: string) {
